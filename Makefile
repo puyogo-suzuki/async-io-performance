@@ -10,6 +10,9 @@ async-unix : async-unix.c
 async-unix2 : async-unix2.c
 	$(CC) $(CFLAGS) async-unix2.c -o async-unix2.out -lrt
 
+async-unix3 : async-unix3.c
+	$(CC) $(CFLAGS) async-unix3.c -o async-unix3.out -lrt
+
 async-linux : async-linux.c
 	$(CC) $(CFLAGS) async-linux.c -o async-linux.out 
 
