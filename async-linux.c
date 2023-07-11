@@ -62,9 +62,9 @@ void setup_my_context(struct my_context_t * ctx, const int fd, const int data) {
     ctx->cb.aio_lio_opcode = IOCB_CMD_PREAD;
     ctx->cb.aio_offset = 0;
     ctx->cb.aio_nbytes = BLK_SIZE;
-    ctx->cb.aio_buf = ctx->buf;
+    ctx->cb.aio_buf = (__u64)ctx->buf;
     ctx->data = data;
-    ctx->cbs[0] = &ctx->cb;
+    ctx->cbs[0] = &ctx->cb; // io_submit用
 }
 
 
@@ -85,35 +85,51 @@ void run(char * filename, int filesize) {
         ctx1->cb.aio_lio_opcode = IOCB_CMD_PREAD;
         ctx2->cb.aio_offset = BLK_SIZE;
         ctx2->cb.aio_lio_opcode = IOCB_CMD_PREAD;
+        // 最初の読み込み
         FAILCHECK(io_submit(ctx, 1, ctx1->cbs) != 1, "io_submit")
         FAILCHECK(io_submit(ctx, 1, ctx2->cbs) != 1, "io_submit")
         int next_ok = 0;
         for(int i = 0; i < size; ++i) {
-            int isCtx1Finished = 0, isCtx2Finished = 0;
             int loop = next_ok == 0;
+            // next_okが立っていた場合，io_geteventsで何もイベントが得られなくても良い．
+            // なぜなら，i番目の読み込みは前のイテレーションで終わっているから．
             next_ok = 0;
             do {
-                int evnum = io_getevents(ctx, 1, 2, events, NULL);
+                int evnum = io_getevents(ctx, loop == 1 ? 1 : 0, 2, events, NULL);
+                int isCtx1Finished = 0, isCtx2Finished = 0;
+                int ctx1Res = 0, ctx2Res = 0;
                 FAILCHECK(evnum == 0, "io_getevents")
                 for(int ev = 0 ; ev < evnum; ev++) {
-                    isCtx1Finished |= events[ev].data == ctx1->data;
-                    isCtx2Finished |= events[ev].data == ctx2->data;
+                    if(events[ev].data == ctx1->data) {
+                        isCtx1Finished = 1;
+                        ctx1Res = events[ev].res;
+                    }
+                    if(events[ev].data == ctx2->data) {
+                        isCtx2Finished = 1;
+                        ctx2Res = events[ev].res;
+                    }
                 }
                 if(isCtx1Finished) {
                     if(ctx1->cb.aio_lio_opcode == IOCB_CMD_PWRITE) { // 読み込みまだ
+                        FAILCHECK(ctx1Res == 0, "write")
                         ctx1->cb.aio_lio_opcode = IOCB_CMD_PREAD;
                         ctx1->cb.aio_offset = BLK_SIZE * i;
                         FAILCHECK(io_submit(ctx, 1, ctx1->cbs) != 1, "io_submit")
-                    } else // 読み込み完了!
+                    } else {// 読み込み完了!
+                        FAILCHECK(ctx1Res == 0, "read")
                         loop = 0;
+                    }
                 }
                 if(isCtx2Finished) {
                     if(ctx2->cb.aio_lio_opcode == IOCB_CMD_PWRITE) { // 書き込みが終わった！
+                        FAILCHECK(ctx2Res == 0, "write")
                         ctx2->cb.aio_lio_opcode = IOCB_CMD_PREAD; // 先行読み込み
                         ctx2->cb.aio_offset = BLK_SIZE * (i+1);
                         if(size > i+1) FAILCHECK(io_submit(ctx, 1, ctx1->cbs) != 1, "io_submit")
-                    } else
+                    } else {
+                        FAILCHECK(ctx2Res == 0, "read")
                         next_ok = 1;
+                    }
                 }
             } while(loop);
             int * buf = (int *) ctx1->buf;
